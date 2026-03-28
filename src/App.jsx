@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback } from 'react'
-import { CONFIG, LOVE_MESSAGES, DUMMY_ENTRIES } from './data'
+import { useState, useRef, useCallback, useMemo } from 'react'
+import { CONFIG, DUMMY_ENTRIES } from './data'
 import {
-  getDayCount, getMessageForDay, createAudioEngine,
-  todayISO, todayWriterMessage,
+  getDayCount, createAudioEngine,
+  todayISO, latestWriterMessage, todayMessageFromJournal,
+  entrySortTime,
 } from './utils'
 
 import Particles       from './components/Particles'
@@ -20,6 +21,7 @@ import Toast           from './components/Toast'
 const JOURNAL_KEY      = 'love_journal_entries'
 const ROLE_KEY         = 'user_role'
 const WRITER_MSG_KEY   = 'writer_messages'
+const LAST_WRITER_KEY  = 'love_last_writer_message'
 
 function loadStored() {
   try {
@@ -62,12 +64,21 @@ function persistWriterMessages(map) {
   localStorage.setItem(WRITER_MSG_KEY, JSON.stringify(map))
 }
 
+function loadLastWriterDisplay() {
+  try {
+    const raw = localStorage.getItem(LAST_WRITER_KEY)
+    if (raw != null && String(raw).trim()) return String(raw).trim()
+  } catch {}
+  return latestWriterMessage(loadWriterMessages()) ?? null
+}
+
 // ─────────────────────────────────────────────────────────────
 export default function App() {
   // ── State ──────────────────────────────────────────────────
   const [entries,        setEntries]        = useState(buildInitialEntries)
   const [role,           setRole]           = useState(loadRole)        // null | 'writer' | 'reader'
   const [writerMessages, setWriterMessages] = useState(loadWriterMessages)
+  const [lastWriterDisplay, setLastWriterDisplay] = useState(loadLastWriterDisplay)
   const [easterOpen,     setEasterOpen]     = useState(false)
   const [pinOpen,        setPinOpen]        = useState(false)
   const [toast,          setToast]          = useState(null)
@@ -77,10 +88,34 @@ export default function App() {
   const toastTimerRef = useRef(null)
 
   // ── Derived ────────────────────────────────────────────────
-  const dayCount       = getDayCount(CONFIG.startDate)
-  const fallbackMsg    = getMessageForDay(dayCount, LOVE_MESSAGES)
-  const customMsg      = todayWriterMessage(writerMessages)
-  const effectiveMsg   = customMsg ?? fallbackMsg   // writer's msg takes priority
+  const dayCount     = getDayCount(CONFIG.startDate)
+  const fromJournalToday = todayMessageFromJournal(entries)
+  const effectiveMsg =
+    (lastWriterDisplay && String(lastWriterDisplay).trim()) ||
+    fromJournalToday ||
+    latestWriterMessage(writerMessages) ||
+    null
+
+  /** Newest today journal row — same time + badge as timeline entries */
+  const todayJournalMeta = useMemo(() => {
+    const t = todayISO()
+    const matches = entries.filter(
+      (e) => e.date === t && (e.source === 'daily' || e.source === 'writer'),
+    )
+    if (matches.length === 0) return { id: null, source: null }
+    matches.sort((a, b) => entrySortTime(b) - entrySortTime(a))
+    const top = matches[0]
+    return { id: top.id, source: top.source }
+  }, [entries])
+
+  /** Reader's reply for today (newest reader entry for this calendar day) */
+  const todayReaderComment = useMemo(() => {
+    const t = todayISO()
+    const matches = entries.filter((e) => e.date === t && e.source === 'reader')
+    if (matches.length === 0) return null
+    matches.sort((a, b) => entrySortTime(b) - entrySortTime(a))
+    return matches[0].text
+  }, [entries])
 
   // ── Toast ──────────────────────────────────────────────────
   const showToast = useCallback((msg) => {
@@ -122,6 +157,10 @@ export default function App() {
       persistWriterMessages(updated)
       return updated
     })
+    setLastWriterDisplay(trimmed)
+    try {
+      localStorage.setItem(LAST_WRITER_KEY, trimmed)
+    } catch {}
     setEntries(prev => {
       const without = prev.filter(e => !(e.source === 'writer' && e.date === day))
       const entry = { id: new Date().toISOString(), text: trimmed, date: day, source: 'writer' }
@@ -165,15 +204,45 @@ export default function App() {
 
   // ── Reader reveal → auto-save to timeline ─────────────────
   const handleDailyReveal = useCallback(() => {
-    if (!customMsg) return
+    if (!effectiveMsg) return
     const today = todayISO()
     const alreadyOnTimeline = entries.some(
       e => e.date === today && (e.source === 'daily' || e.source === 'writer'),
     )
     if (alreadyOnTimeline) return
-    addEntry(customMsg, today, 'daily')
+    addEntry(effectiveMsg, today, 'daily')
+    setLastWriterDisplay(effectiveMsg)
+    try {
+      localStorage.setItem(LAST_WRITER_KEY, effectiveMsg)
+    } catch {}
     showToast('Added to our timeline ✨')
-  }, [customMsg, entries, addEntry, showToast])
+  }, [effectiveMsg, entries, addEntry, showToast])
+
+  /** Replace or clear today's reader reply (shown on timeline as 💬 Reply) */
+  const saveReaderComment = useCallback(
+    (text) => {
+      const today = todayISO()
+      const trimmed = String(text ?? '').trim()
+      setEntries((prev) => {
+        const without = prev.filter((e) => !(e.date === today && e.source === 'reader'))
+        const updated = trimmed
+          ? [
+              ...without,
+              {
+                id: new Date().toISOString(),
+                text: trimmed,
+                date: today,
+                source: 'reader',
+              },
+            ]
+          : without
+        persist(updated)
+        return updated
+      })
+      showToast(trimmed ? 'Reply saved 💌' : 'Reply removed')
+    },
+    [showToast],
+  )
 
   // ── Music ──────────────────────────────────────────────────
   function toggleMusic() {
@@ -216,6 +285,10 @@ export default function App() {
           <DailyMessage
             dayCount={dayCount}
             message={effectiveMsg}
+            journalEntryId={todayJournalMeta.id}
+            journalEntrySource={todayJournalMeta.source}
+            readerComment={todayReaderComment}
+            onSaveReaderComment={saveReaderComment}
             onEasterEgg={() => setEasterOpen(true)}
             onReveal={handleDailyReveal}
           />

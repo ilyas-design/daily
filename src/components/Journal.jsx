@@ -129,6 +129,7 @@ function EntryCard({ entry, onDelete }) {
             {formatTime(entry.id)}
             {entry.source === 'daily' && <span className="entry-source-badge">💌 Daily</span>}
             {entry.source === 'writer' && <span className="entry-source-badge">✍️ Love note</span>}
+            {entry.source === 'reader' && <span className="entry-source-badge">💬 Reply</span>}
           </span>
           <button className="entry-delete" onClick={handleDelete} aria-label="Delete entry">✕</button>
         </div>
