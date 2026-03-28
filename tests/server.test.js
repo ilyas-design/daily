@@ -1,34 +1,52 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import request from 'supertest'
 
-// ── Mock pg before importing the server ──────────────────────
-// vi.hoisted ensures the variable is available inside vi.mock's factory,
-// which Vitest hoists to the top of the file before any imports.
-const mockQuery = vi.hoisted(() => vi.fn())
+// ── Mock MongoDB before importing the server ──────────────────
 
-vi.mock('pg', () => ({
-  default: {
-    Pool: class {
-      constructor() { this.query = mockQuery }
-    },
+const mockToArray   = vi.hoisted(() => vi.fn().mockResolvedValue([]))
+const mockReplaceOne = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+const mockDeleteOne  = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+const mockDeleteMany = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+const mockFindChain = vi.hoisted(() => {
+  const chain = { toArray: mockToArray }
+  chain.sort = vi.fn().mockReturnValue(chain)
+  return chain
+})
+
+const mockCollection = vi.hoisted(() => ({
+  find:       vi.fn().mockReturnValue(mockFindChain),
+  replaceOne: mockReplaceOne,
+  deleteOne:  mockDeleteOne,
+  deleteMany: mockDeleteMany,
+}))
+
+vi.mock('mongodb', () => ({
+  MongoClient: class {
+    async connect() {}
+    db() { return { collection: () => mockCollection } }
   },
 }))
 
-// Import AFTER the mock is set up
-const { app } = await import('../server.js')
+const { app, initDB } = await import('../server.js')
 
-// ─────────────────────────────────────────────────────────────
+// Connect the mock DB once before all tests
+beforeAll(async () => { await initDB() })
 
 beforeEach(() => {
-  mockQuery.mockReset()
+  vi.clearAllMocks()
+  mockCollection.find.mockReturnValue(mockFindChain)
+  mockFindChain.sort.mockReturnValue(mockFindChain)
+  mockToArray.mockResolvedValue([])
+  mockReplaceOne.mockResolvedValue({})
+  mockDeleteOne.mockResolvedValue({})
+  mockDeleteMany.mockResolvedValue({})
 })
 
 // ── Writer saves a message ────────────────────────────────────
 
 describe('POST /api/writer-messages', () => {
   it('stores the message and returns { ok: true }', async () => {
-    mockQuery.mockResolvedValue({ rows: [] })
-
     const res = await request(app)
       .post('/api/writer-messages')
       .send({ date: '2026-03-28', text: 'من أجلكِ… 🤍' })
@@ -38,36 +56,35 @@ describe('POST /api/writer-messages', () => {
   })
 
   it('calls the database with the correct date and text', async () => {
-    mockQuery.mockResolvedValue({ rows: [] })
-
     await request(app)
       .post('/api/writer-messages')
       .send({ date: '2026-03-28', text: 'I love you' })
 
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO writer_messages'),
-      ['2026-03-28', 'I love you'],
+    expect(mockReplaceOne).toHaveBeenCalledWith(
+      { _id: '2026-03-28' },
+      { _id: '2026-03-28', text: 'I love you' },
+      { upsert: true },
     )
   })
 
   it('returns 400 when date or text is missing', async () => {
     const res = await request(app)
       .post('/api/writer-messages')
-      .send({ date: '2026-03-28' }) // no text
+      .send({ date: '2026-03-28' })
 
     expect(res.status).toBe(400)
     expect(res.body.error).toBeDefined()
   })
 
   it('returns 500 when the database throws', async () => {
-    mockQuery.mockRejectedValue(new Error('DB connection lost'))
+    mockReplaceOne.mockRejectedValueOnce(new Error('Connection lost'))
 
     const res = await request(app)
       .post('/api/writer-messages')
       .send({ date: '2026-03-28', text: 'Hello' })
 
     expect(res.status).toBe(500)
-    expect(res.body.error).toBe('DB connection lost')
+    expect(res.body.error).toBe('Connection lost')
   })
 })
 
@@ -75,12 +92,10 @@ describe('POST /api/writer-messages', () => {
 
 describe('GET /api/writer-messages', () => {
   it('returns all writer messages as a date→text map', async () => {
-    mockQuery.mockResolvedValue({
-      rows: [
-        { date: '2026-03-28', text: 'من أجلكِ… 🤍' },
-        { date: '2026-03-27', text: 'Yesterday message' },
-      ],
-    })
+    mockToArray.mockResolvedValueOnce([
+      { _id: '2026-03-28', text: 'من أجلكِ… 🤍' },
+      { _id: '2026-03-27', text: 'Yesterday message' },
+    ])
 
     const res = await request(app).get('/api/writer-messages')
 
@@ -92,7 +107,7 @@ describe('GET /api/writer-messages', () => {
   })
 
   it('returns an empty object when no messages exist', async () => {
-    mockQuery.mockResolvedValue({ rows: [] })
+    mockToArray.mockResolvedValueOnce([])
 
     const res = await request(app).get('/api/writer-messages')
 
@@ -108,19 +123,15 @@ describe('Full flow: writer writes, reader reads', () => {
     const date = '2026-03-28'
     const text = 'سعادتكِ راحتي 💜'
 
-    // Step 1 — writer saves the message
-    mockQuery.mockResolvedValueOnce({ rows: [] }) // INSERT response
-
+    // Writer saves
     const writeRes = await request(app)
       .post('/api/writer-messages')
       .send({ date, text })
-
     expect(writeRes.status).toBe(200)
     expect(writeRes.body).toEqual({ ok: true })
 
-    // Step 2 — reader fetches messages
-    mockQuery.mockResolvedValueOnce({ rows: [{ date, text }] }) // SELECT response
-
+    // Reader fetches — DB now returns the saved message
+    mockToArray.mockResolvedValueOnce([{ _id: date, text }])
     const readRes = await request(app).get('/api/writer-messages')
 
     expect(readRes.status).toBe(200)
@@ -129,21 +140,15 @@ describe('Full flow: writer writes, reader reads', () => {
 
   it('reader sees the latest message when writer overwrites a date', async () => {
     const date = '2026-03-28'
-    const originalText = 'First draft'
-    const updatedText  = 'Updated message 💞'
+    const updatedText = 'Updated message 💞'
 
-    // Writer saves original
-    mockQuery.mockResolvedValueOnce({ rows: [] })
-    await request(app).post('/api/writer-messages').send({ date, text: originalText })
-
-    // Writer overwrites with updated message (ON CONFLICT DO UPDATE)
-    mockQuery.mockResolvedValueOnce({ rows: [] })
+    await request(app).post('/api/writer-messages').send({ date, text: 'First draft' })
     await request(app).post('/api/writer-messages').send({ date, text: updatedText })
 
-    // DB returns the updated row (as it would after an upsert)
-    mockQuery.mockResolvedValueOnce({ rows: [{ date, text: updatedText }] })
-
+    // DB returns the updated row (replaceOne with upsert overwrites)
+    mockToArray.mockResolvedValueOnce([{ _id: date, text: updatedText }])
     const readRes = await request(app).get('/api/writer-messages')
+
     expect(readRes.body[date]).toBe(updatedText)
   })
 })
@@ -152,8 +157,6 @@ describe('Full flow: writer writes, reader reads', () => {
 
 describe('POST /api/entries', () => {
   it('saves a journal entry and returns { ok: true }', async () => {
-    mockQuery.mockResolvedValue({ rows: [] })
-
     const entry = {
       id: '2026-03-28T12:00:00.000Z',
       text: 'من أجلكِ… 🤍',
@@ -165,47 +168,40 @@ describe('POST /api/entries', () => {
 
     expect(res.status).toBe(200)
     expect(res.body).toEqual({ ok: true })
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO journal_entries'),
-      [entry.id, entry.text, entry.date, entry.source],
+    expect(mockReplaceOne).toHaveBeenCalledWith(
+      { _id: entry.id },
+      { _id: entry.id, text: entry.text, date: entry.date, source: entry.source },
+      { upsert: true },
     )
   })
 
   it('returns 400 when required fields are missing', async () => {
-    const res = await request(app)
-      .post('/api/entries')
-      .send({ text: 'No id or date' })
-
+    const res = await request(app).post('/api/entries').send({ text: 'No id or date' })
     expect(res.status).toBe(400)
   })
 })
 
 describe('GET /api/entries', () => {
-  it('returns all journal entries as an array', async () => {
-    const rows = [
-      { id: '2026-03-28T12:00:00.000Z', text: 'Hello', date: '2026-03-28', source: 'writer' },
-      { id: '2026-03-28T18:00:00.000Z', text: 'Reply', date: '2026-03-28', source: 'reader' },
-    ]
-    mockQuery.mockResolvedValue({ rows })
+  it('returns all journal entries as an array with id field', async () => {
+    mockToArray.mockResolvedValueOnce([
+      { _id: '2026-03-28T12:00:00.000Z', text: 'Hello', date: '2026-03-28', source: 'writer' },
+      { _id: '2026-03-28T18:00:00.000Z', text: 'Reply', date: '2026-03-28', source: 'reader' },
+    ])
 
     const res = await request(app).get('/api/entries')
 
     expect(res.status).toBe(200)
-    expect(res.body).toEqual(rows)
+    expect(res.body[0].id).toBe('2026-03-28T12:00:00.000Z')
+    expect(res.body[1].id).toBe('2026-03-28T18:00:00.000Z')
   })
 })
 
 describe('DELETE /api/entries/:id', () => {
   it('deletes the entry and returns { ok: true }', async () => {
-    mockQuery.mockResolvedValue({ rows: [] })
-
     const res = await request(app).delete('/api/entries/2026-03-28T12:00:00.000Z')
 
     expect(res.status).toBe(200)
     expect(res.body).toEqual({ ok: true })
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('DELETE FROM journal_entries'),
-      ['2026-03-28T12:00:00.000Z'],
-    )
+    expect(mockDeleteOne).toHaveBeenCalledWith({ _id: '2026-03-28T12:00:00.000Z' })
   })
 })

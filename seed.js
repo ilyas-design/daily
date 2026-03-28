@@ -1,24 +1,21 @@
 /**
  * One-time seed script — run once against your live database:
  *
- *   DATABASE_URL="your-render-postgres-url" node seed.js
+ *   DATABASE_URL="mongodb+srv://..." node seed.js
  *
- * Safe to re-run: uses ON CONFLICT DO NOTHING so existing rows are never overwritten.
+ * Safe to re-run: uses replaceOne with upsert so existing entries are never duplicated.
  */
 
-import pg from 'pg'
-
-const { Pool } = pg
+import { MongoClient } from 'mongodb'
 
 if (!process.env.DATABASE_URL) {
   console.error('ERROR: DATABASE_URL environment variable is required.')
   process.exit(1)
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-})
+const client = new MongoClient(process.env.DATABASE_URL)
+await client.connect()
+const db = client.db('daily')
 
 const messages = [
   {
@@ -49,20 +46,19 @@ it's your smile, and the happiness I see in you ✨`,
   // { date: '2026-03-29', text: '...' },
 ]
 
-async function seed() {
-  for (const { date, text } of messages) {
-    await pool.query(
-      `INSERT INTO writer_messages (date, text) VALUES ($1, $2) ON CONFLICT (date) DO NOTHING`,
-      [date, text],
-    )
-    await pool.query(
-      `INSERT INTO journal_entries (id, text, date, source) VALUES ($1, $2, $3, 'writer') ON CONFLICT (id) DO NOTHING`,
-      [`${date}T12:00:00.000Z`, text, date],
-    )
-    console.log(`✓ Inserted message for ${date}`)
-  }
-  console.log('Seed complete.')
-  await pool.end()
+for (const { date, text } of messages) {
+  await db.collection('writer_messages').replaceOne(
+    { _id: date },
+    { _id: date, text },
+    { upsert: true },
+  )
+  await db.collection('journal_entries').replaceOne(
+    { _id: `${date}T12:00:00.000Z` },
+    { _id: `${date}T12:00:00.000Z`, text, date, source: 'writer' },
+    { upsert: true },
+  )
+  console.log(`✓ Inserted message for ${date}`)
 }
 
-seed().catch(err => { console.error(err); process.exit(1) })
+console.log('Seed complete.')
+await client.close()
