@@ -118,5 +118,31 @@ export function todayWriterMessage(writerMessages) {
   return writerMessages[todayISO()] ?? null;
 }
 
+/** Most recent dated message (ISO keys sort lexicographically). For migration when no last-save key exists. */
+export function latestWriterMessage(writerMessages) {
+  if (!writerMessages || typeof writerMessages !== 'object') return null;
+  const dates = Object.keys(writerMessages).filter((d) => {
+    const t = writerMessages[d];
+    return t && String(t).trim();
+  });
+  if (dates.length === 0) return null;
+  dates.sort((a, b) => b.localeCompare(a));
+  const text = String(writerMessages[dates[0]]).trim();
+  return text || null;
+}
+
+/** Newest text for today from journal (writer or daily reveal) — keeps Today's Message in sync after reload. */
+export function todayMessageFromJournal(entries) {
+  if (!entries?.length) return null;
+  const t = todayISO();
+  const matches = entries.filter(
+    (e) => e.date === t && (e.source === 'daily' || e.source === 'writer'),
+  );
+  if (matches.length === 0) return null;
+  matches.sort((a, b) => entrySortTime(b) - entrySortTime(a));
+  const text = matches[0].text;
+  return text && String(text).trim() ? String(text).trim() : null;
+}
+
 // ─── PARTICLES ───────────────────────────────────────────────
 export function randomBetween(a, b) { return a + Math.random() * (b - a); }
