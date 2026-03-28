@@ -1,10 +1,14 @@
-import { useState, useRef, useCallback, useMemo } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { CONFIG, LOVE_MESSAGES } from './data'
 import {
   getDayCount, createAudioEngine,
   todayISO, latestWriterMessage, todayMessageFromJournal,
   entrySortTime, getMessageForDay,
 } from './utils'
+import {
+  fetchEntries, saveEntry, deleteEntry, deleteEntriesByDateSource,
+  fetchWriterMessages, saveWriterMessageAPI, deleteWriterMessage,
+} from './api'
 
 import Particles       from './components/Particles'
 import MusicBtn        from './components/MusicBtn'
@@ -19,68 +23,17 @@ import Journal         from './components/Journal'
 import Toast           from './components/Toast'
 import SallyIntro      from './components/SallyIntro'
 
-// ── Storage keys ─────────────────────────────────────────────
-const JOURNAL_KEY      = 'love_journal_entries'
-const ROLE_KEY         = 'user_role'
-const WRITER_MSG_KEY   = 'writer_messages'
-const LAST_WRITER_KEY  = 'love_last_writer_message'
-
-function loadStored() {
-  try {
-    const raw = localStorage.getItem(JOURNAL_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch {}
-  return []
-}
-
-/** Merge saved writer messages into the timeline once (same storage, visible in Our Journal). */
-function buildInitialEntries() {
-  const entries = loadStored()
-  const wm = loadWriterMessages()
-  const next = [...entries]
-  let changed = false
-  for (const [date, text] of Object.entries(wm)) {
-    if (!text || !String(text).trim()) continue
-    if (!next.some(e => e.source === 'writer' && e.date === date)) {
-      next.push({ id: `${date}T12:00:00.000Z`, text: String(text).trim(), date, source: 'writer' })
-      changed = true
-    }
-  }
-  if (changed) localStorage.setItem(JOURNAL_KEY, JSON.stringify(next))
-  return next
-}
-function persist(entries) {
-  localStorage.setItem(JOURNAL_KEY, JSON.stringify(entries))
-}
-function loadRole() {
-  return localStorage.getItem(ROLE_KEY) // 'writer' | 'reader' | null
-}
-function saveRole(r) {
-  localStorage.setItem(ROLE_KEY, r)
-}
-function loadWriterMessages() {
-  try { return JSON.parse(localStorage.getItem(WRITER_MSG_KEY)) || {} }
-  catch { return {} }
-}
-function persistWriterMessages(map) {
-  localStorage.setItem(WRITER_MSG_KEY, JSON.stringify(map))
-}
-
-function loadLastWriterDisplay() {
-  try {
-    const raw = localStorage.getItem(LAST_WRITER_KEY)
-    if (raw != null && String(raw).trim()) return String(raw).trim()
-  } catch {}
-  return latestWriterMessage(loadWriterMessages()) ?? null
-}
+const ROLE_KEY = 'user_role'
+function loadRole()    { return localStorage.getItem(ROLE_KEY) }
+function saveRole(r)   { localStorage.setItem(ROLE_KEY, r) }
 
 // ─────────────────────────────────────────────────────────────
 export default function App() {
   // ── State ──────────────────────────────────────────────────
-  const [entries,        setEntries]        = useState(buildInitialEntries)
-  const [role,           setRole]           = useState(loadRole)        // null | 'writer' | 'reader'
-  const [writerMessages, setWriterMessages] = useState(loadWriterMessages)
-  const [lastWriterDisplay, setLastWriterDisplay] = useState(loadLastWriterDisplay)
+  const [entries,        setEntries]        = useState([])
+  const [role,           setRole]           = useState(loadRole)   // null | 'writer' | 'reader'
+  const [writerMessages, setWriterMessages] = useState({})
+  const [loading,        setLoading]        = useState(true)
   const [easterOpen,     setEasterOpen]     = useState(false)
   const [pinOpen,        setPinOpen]        = useState(false)
   const [toast,          setToast]          = useState(null)
@@ -90,16 +43,31 @@ export default function App() {
   const audioRef      = useRef(null)
   const toastTimerRef = useRef(null)
 
-  // ── Derived ────────────────────────────────────────────────
-  const dayCount     = getDayCount(CONFIG.startDate)
-  const fromJournalToday = todayMessageFromJournal(entries)
-  const effectiveMsg =
-    (lastWriterDisplay && String(lastWriterDisplay).trim()) ||
-    fromJournalToday ||
-    latestWriterMessage(writerMessages) ||
-    null
+  // ── Load data from DB on mount ─────────────────────────────
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [loadedEntries, loadedWM] = await Promise.all([
+          fetchEntries(),
+          fetchWriterMessages(),
+        ])
+        setEntries(loadedEntries)
+        setWriterMessages(loadedWM)
+      } catch (err) {
+        console.error('Failed to load data:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadData()
+  }, [])
 
-  /** Writer / journal text, or a stable daily line from LOVE_MESSAGES */
+  // ── Derived ────────────────────────────────────────────────
+  const dayCount          = getDayCount(CONFIG.startDate)
+  const fromJournalToday  = todayMessageFromJournal(entries)
+  const latestWriter      = latestWriterMessage(writerMessages)
+  const effectiveMsg      = latestWriter || fromJournalToday || null
+
   const readerDailyMessage = useMemo(() => {
     const t = effectiveMsg && String(effectiveMsg).trim()
     if (t) return t
@@ -107,11 +75,10 @@ export default function App() {
     return getMessageForDay(dayCount, LOVE_MESSAGES)
   }, [effectiveMsg, dayCount])
 
-  /** Newest today journal row — same time + badge as timeline entries */
   const todayJournalMeta = useMemo(() => {
     const t = todayISO()
     const matches = entries.filter(
-      (e) => e.date === t && (e.source === 'daily' || e.source === 'writer'),
+      e => e.date === t && (e.source === 'daily' || e.source === 'writer'),
     )
     if (matches.length === 0) return { id: null, source: null }
     matches.sort((a, b) => entrySortTime(b) - entrySortTime(a))
@@ -119,10 +86,9 @@ export default function App() {
     return { id: top.id, source: top.source }
   }, [entries])
 
-  /** Reader's reply for today (newest reader entry for this calendar day) */
   const todayReaderComment = useMemo(() => {
     const t = todayISO()
-    const matches = entries.filter((e) => e.date === t && e.source === 'reader')
+    const matches = entries.filter(e => e.date === t && e.source === 'reader')
     if (matches.length === 0) return null
     matches.sort((a, b) => entrySortTime(b) - entrySortTime(a))
     return matches[0].text
@@ -142,16 +108,13 @@ export default function App() {
   }
   function switchRole() {
     if (role === 'writer') {
-      // Writer → Reader: instant, no PIN needed
       saveRole('reader')
       setRole('reader')
       showToast('💌 Reader mode')
     } else {
-      // Reader → Writer: require PIN
       setPinOpen(true)
     }
   }
-
   function handlePinSuccess() {
     setPinOpen(false)
     saveRole('writer')
@@ -160,61 +123,64 @@ export default function App() {
   }
 
   // ── Writer message ─────────────────────────────────────────
-  const saveWriterMessage = useCallback((text, dateISO) => {
-    const day = dateISO ?? todayISO()
+  const saveWriterMessage = useCallback(async (text, dateISO) => {
+    const day     = dateISO ?? todayISO()
     const trimmed = text.trim()
-    setWriterMessages(prev => {
-      const updated = { ...prev, [day]: trimmed }
-      persistWriterMessages(updated)
-      return updated
-    })
-    setLastWriterDisplay(trimmed)
-    try {
-      localStorage.setItem(LAST_WRITER_KEY, trimmed)
-    } catch {}
+    const entryId = new Date().toISOString()
+    const entry   = { id: entryId, text: trimmed, date: day, source: 'writer' }
+
+    // Optimistic UI update
+    setWriterMessages(prev => ({ ...prev, [day]: trimmed }))
     setEntries(prev => {
       const without = prev.filter(e => !(e.source === 'writer' && e.date === day))
-      const entry = { id: new Date().toISOString(), text: trimmed, date: day, source: 'writer' }
-      const updated = [...without, entry]
-      persist(updated)
-      return updated
+      return [...without, entry]
     })
-    showToast('Message saved ♥')
+
+    try {
+      await Promise.all([
+        saveWriterMessageAPI(day, trimmed),
+        saveEntry(entry),
+      ])
+      showToast('Message saved ♥')
+    } catch (err) {
+      console.error('Failed to save writer message:', err)
+      showToast('Save failed, please retry')
+    }
   }, [showToast])
 
   // ── Journal entries ────────────────────────────────────────
-  const addEntry = useCallback((text, date, source = null) => {
-    setEntries(prev => {
-      const entry = { id: new Date().toISOString(), text, date }
-      if (source) entry.source = source
-      const updated = [...prev, entry]
-      persist(updated)
-      return updated
-    })
-    if (!source) showToast('Saved 🎀')   // silent for auto-saves
+  const addEntry = useCallback(async (text, date, source = null) => {
+    const entry = { id: new Date().toISOString(), text, date, source: source || 'daily' }
+    setEntries(prev => [...prev, entry])
+    if (!source) showToast('Saved 🎀')
+    try {
+      await saveEntry(entry)
+    } catch (err) {
+      console.error('Failed to save entry:', err)
+    }
   }, [showToast])
 
-  const deleteEntry = useCallback((id) => {
-    setEntries(prev => {
-      const removed = prev.find(e => e.id === id)
-      if (!removed) return prev
-      const updated = prev.filter(e => e.id !== id)
-      persist(updated)
-      if (removed.source === 'writer' && removed.date) {
-        setWriterMessages(wm => {
-          const next = { ...wm }
-          delete next[removed.date]
-          persistWriterMessages(next)
-          return next
-        })
-      }
-      return updated
-    })
+  const deleteEntry_ = useCallback(async (id) => {
+    const removed = entries.find(e => e.id === id)
+    setEntries(prev => prev.filter(e => e.id !== id))
+    if (removed?.source === 'writer' && removed?.date) {
+      setWriterMessages(wm => {
+        const next = { ...wm }
+        delete next[removed.date]
+        return next
+      })
+      deleteWriterMessage(removed.date).catch(console.error)
+    }
+    try {
+      await deleteEntry(id)
+    } catch (err) {
+      console.error('Failed to delete entry:', err)
+    }
     showToast('Entry removed')
-  }, [showToast])
+  }, [entries, showToast])
 
   // ── Reader reveal → auto-save to timeline ─────────────────
-  const handleDailyReveal = useCallback(() => {
+  const handleDailyReveal = useCallback(async () => {
     const text = readerDailyMessage && String(readerDailyMessage).trim()
     if (!text) return
     const today = todayISO()
@@ -222,39 +188,33 @@ export default function App() {
       e => e.date === today && (e.source === 'daily' || e.source === 'writer'),
     )
     if (alreadyOnTimeline) return
-    addEntry(text, today, 'daily')
-    setLastWriterDisplay(text)
-    try {
-      localStorage.setItem(LAST_WRITER_KEY, text)
-    } catch {}
+    const entry = { id: new Date().toISOString(), text, date: today, source: 'daily' }
+    setEntries(prev => [...prev, entry])
     showToast('Added to our timeline ✨')
-  }, [readerDailyMessage, entries, addEntry, showToast])
+    saveEntry(entry).catch(console.error)
+  }, [readerDailyMessage, entries, showToast])
 
-  /** Replace or clear today's reader reply (shown on timeline as 💬 Reply) */
-  const saveReaderComment = useCallback(
-    (text) => {
-      const today = todayISO()
-      const trimmed = String(text ?? '').trim()
-      setEntries((prev) => {
-        const without = prev.filter((e) => !(e.date === today && e.source === 'reader'))
-        const updated = trimmed
-          ? [
-              ...without,
-              {
-                id: new Date().toISOString(),
-                text: trimmed,
-                date: today,
-                source: 'reader',
-              },
-            ]
-          : without
-        persist(updated)
-        return updated
-      })
-      showToast(trimmed ? 'Reply saved 💌' : 'Reply removed')
-    },
-    [showToast],
-  )
+  // ── Reader reply ───────────────────────────────────────────
+  const saveReaderComment = useCallback(async (text) => {
+    const today   = todayISO()
+    const trimmed = String(text ?? '').trim()
+    const newEntry = trimmed
+      ? { id: new Date().toISOString(), text: trimmed, date: today, source: 'reader' }
+      : null
+
+    setEntries(prev => {
+      const without = prev.filter(e => !(e.date === today && e.source === 'reader'))
+      return newEntry ? [...without, newEntry] : without
+    })
+
+    try {
+      await deleteEntriesByDateSource(today, 'reader')
+      if (newEntry) await saveEntry(newEntry)
+    } catch (err) {
+      console.error('Failed to save reader comment:', err)
+    }
+    showToast(trimmed ? 'Reply saved 💌' : 'Reply removed')
+  }, [showToast])
 
   // ── Music ──────────────────────────────────────────────────
   function toggleMusic() {
@@ -284,13 +244,11 @@ export default function App() {
       )}
       <MusicBtn playing={musicOn} onToggle={toggleMusic} />
 
-      {/* Role selection — shown on first visit */}
       {role === null && <RoleSelectModal onSelect={handleRoleSelect} />}
 
       <div className="app">
         <Header dayCount={dayCount} />
 
-        {/* Writer: compose today's message */}
         {role === 'writer' && (
           <WriterComposer
             writerMessages={writerMessages}
@@ -299,11 +257,10 @@ export default function App() {
           />
         )}
 
-        {/* Reader: reveal today's message (auto-saves to timeline) */}
         {role === 'reader' && (
           <DailyMessage
             dayCount={dayCount}
-            message={readerDailyMessage}
+            message={loading ? null : readerDailyMessage}
             journalEntryId={todayJournalMeta.id}
             journalEntrySource={todayJournalMeta.source}
             readerComment={todayReaderComment}
@@ -314,13 +271,12 @@ export default function App() {
         )}
 
         {easterOpen && <EasterModal onClose={() => setEasterOpen(false)} dayCount={dayCount} />}
-      {pinOpen    && <PinModal onSuccess={handlePinSuccess} onCancel={() => setPinOpen(false)} />}
+        {pinOpen    && <PinModal onSuccess={handlePinSuccess} onCancel={() => setPinOpen(false)} />}
 
-        {/* Timeline — visible to both roles; no composer for either */}
         <Journal
           entries={entries}
           onAdd={addEntry}
-          onDelete={deleteEntry}
+          onDelete={deleteEntry_}
           showToast={showToast}
           showComposer={false}
           dayCount={dayCount}
