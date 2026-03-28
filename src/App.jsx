@@ -1,13 +1,14 @@
 import { useState, useRef, useCallback, useMemo } from 'react'
-import { CONFIG, DUMMY_ENTRIES } from './data'
+import { CONFIG, LOVE_MESSAGES } from './data'
 import {
   getDayCount, createAudioEngine,
   todayISO, latestWriterMessage, todayMessageFromJournal,
-  entrySortTime,
+  entrySortTime, getMessageForDay,
 } from './utils'
 
 import Particles       from './components/Particles'
 import MusicBtn        from './components/MusicBtn'
+import TodaysQuoteBtn  from './components/TodaysQuoteBtn'
 import Header          from './components/Header'
 import DailyMessage    from './components/DailyMessage'
 import EasterModal     from './components/EasterModal'
@@ -16,6 +17,7 @@ import RoleSelectModal from './components/RoleSelectModal'
 import PinModal        from './components/PinModal'
 import Journal         from './components/Journal'
 import Toast           from './components/Toast'
+import SallyIntro      from './components/SallyIntro'
 
 // ── Storage keys ─────────────────────────────────────────────
 const JOURNAL_KEY      = 'love_journal_entries'
@@ -28,7 +30,7 @@ function loadStored() {
     const raw = localStorage.getItem(JOURNAL_KEY)
     if (raw) return JSON.parse(raw)
   } catch {}
-  return DUMMY_ENTRIES
+  return []
 }
 
 /** Merge saved writer messages into the timeline once (same storage, visible in Our Journal). */
@@ -83,6 +85,7 @@ export default function App() {
   const [pinOpen,        setPinOpen]        = useState(false)
   const [toast,          setToast]          = useState(null)
   const [musicOn,        setMusicOn]        = useState(false)
+  const [showIntro,      setShowIntro]      = useState(true)
 
   const audioRef      = useRef(null)
   const toastTimerRef = useRef(null)
@@ -95,6 +98,14 @@ export default function App() {
     fromJournalToday ||
     latestWriterMessage(writerMessages) ||
     null
+
+  /** Writer / journal text, or a stable daily line from LOVE_MESSAGES */
+  const readerDailyMessage = useMemo(() => {
+    const t = effectiveMsg && String(effectiveMsg).trim()
+    if (t) return t
+    if (dayCount < 1) return null
+    return getMessageForDay(dayCount, LOVE_MESSAGES)
+  }, [effectiveMsg, dayCount])
 
   /** Newest today journal row — same time + badge as timeline entries */
   const todayJournalMeta = useMemo(() => {
@@ -204,19 +215,20 @@ export default function App() {
 
   // ── Reader reveal → auto-save to timeline ─────────────────
   const handleDailyReveal = useCallback(() => {
-    if (!effectiveMsg) return
+    const text = readerDailyMessage && String(readerDailyMessage).trim()
+    if (!text) return
     const today = todayISO()
     const alreadyOnTimeline = entries.some(
       e => e.date === today && (e.source === 'daily' || e.source === 'writer'),
     )
     if (alreadyOnTimeline) return
-    addEntry(effectiveMsg, today, 'daily')
-    setLastWriterDisplay(effectiveMsg)
+    addEntry(text, today, 'daily')
+    setLastWriterDisplay(text)
     try {
-      localStorage.setItem(LAST_WRITER_KEY, effectiveMsg)
+      localStorage.setItem(LAST_WRITER_KEY, text)
     } catch {}
     showToast('Added to our timeline ✨')
-  }, [effectiveMsg, entries, addEntry, showToast])
+  }, [readerDailyMessage, entries, addEntry, showToast])
 
   /** Replace or clear today's reader reply (shown on timeline as 💬 Reply) */
   const saveReaderComment = useCallback(
@@ -262,7 +274,14 @@ export default function App() {
   // ─────────────────────────────────────────────────────────
   return (
     <>
+      {showIntro && <SallyIntro onDone={() => setShowIntro(false)} />}
       <Particles />
+      {role !== null && (
+        <TodaysQuoteBtn
+          role={role}
+          onWriterHint={() => showToast('Reader mode 💌 opens the letter — use Switch below')}
+        />
+      )}
       <MusicBtn playing={musicOn} onToggle={toggleMusic} />
 
       {/* Role selection — shown on first visit */}
@@ -284,7 +303,7 @@ export default function App() {
         {role === 'reader' && (
           <DailyMessage
             dayCount={dayCount}
-            message={effectiveMsg}
+            message={readerDailyMessage}
             journalEntryId={todayJournalMeta.id}
             journalEntrySource={todayJournalMeta.source}
             readerComment={todayReaderComment}

@@ -50,32 +50,3 @@ export const EASTER_MESSAGES = [
   "This message was always here, hidden, waiting for someone curious enough to find it. Just like I was waiting for you.",
   "Secrets only mean something when shared with the right person. You are that person. Always.",
 ];
-
-// ─── DUMMY SEED ENTRIES ───────────────────────────────────────
-function fakeISO(ymd, hh, mm) {
-  return `${ymd}T${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:00.000Z`;
-}
-function daysAgo(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
-
-const t0 = daysAgo(0);
-const t1 = daysAgo(1);
-const t3 = daysAgo(3);
-const t5 = daysAgo(5);
-const t8 = daysAgo(8);
-const t12 = daysAgo(12);
-
-export const DUMMY_ENTRIES = [
-  { id: fakeISO(t0, 9, 14),  date: t0,  text: "Good morning, love ☀️ Made your favorite coffee and thought of you with every sip. Today feels like a good day." },
-  { id: fakeISO(t0, 21, 5),  date: t0,  text: "Can't sleep. Just wanted to write that I'm really grateful for you. That's all. ♥" },
-  { id: fakeISO(t1, 18, 30), date: t1,  text: "We watched the rain from the window for like an hour and said nothing and it was perfect. I love those moments with you." },
-  { id: fakeISO(t3, 10, 0),  date: t3,  text: "رسالة بالعربي 🌸 أنا سعيد جداً لأنك في حياتي. كل يوم معك يشعرني بأن العالم أجمل." },
-  { id: fakeISO(t3, 22, 45), date: t3,  text: "You fell asleep on my shoulder during the movie. I didn't move for two hours. Best two hours of my week." },
-  { id: fakeISO(t5, 14, 20), date: t5,  text: "Saw a flower today that reminded me of you — unexpected, quietly beautiful, impossible to ignore." },
-  { id: fakeISO(t8, 8, 5),   date: t8,  text: "First entry in our journal! I want us to fill this with tiny moments. The big ones take care of themselves." },
-  { id: fakeISO(t8, 20, 55), date: t8,  text: "You laughed so hard today that you snorted and then laughed harder. I am keeping that memory forever." },
-  { id: fakeISO(t12, 16, 0), date: t12, text: "Missing you a little extra today. Wrote this just so you'd know. Come home soon. ♥" },
-];

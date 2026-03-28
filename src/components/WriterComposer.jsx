@@ -52,7 +52,7 @@ export default function WriterComposer({ writerMessages, onSave, dayCount = 0 })
     <section className="section daily-section">
       <div className="section-eyebrow">Write Today's Message</div>
 
-      <div className="journal-composer glass-card writer-composer">
+      <div className="journal-composer glass-card writer-composer" id="todays-quote">
         <img className="writer-hk-corner" src={pickHkPng(dayCount, 41)} alt="" aria-hidden="true" draggable="false" />
         <div className="composer-date-row">
           <span className="composer-date-bow">🎀</span>

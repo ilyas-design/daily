@@ -4,6 +4,11 @@ import { CONFIG } from '../data'
 
 const READER_COMMENT_MAX = 500
 
+const OPEN_MS = 880
+
+/** Session-only: each new visit starts with the closed envelope (letter first, then tap to open). */
+const SESSION_REVEAL_KEY = 'revealedLetterDay'
+
 export default function DailyMessage({
   dayCount,
   message,
@@ -14,36 +19,55 @@ export default function DailyMessage({
   onEasterEgg,
   onReveal,
 }) {
-  const [revealed,  setRevealed]  = useState(() => localStorage.getItem('revealedDay') === String(dayCount))
-  const [hiding,    setHiding]    = useState(false)
-  const [tapCount,  setTapCount]  = useState(0)
-  const [pulse,     setPulse]     = useState(false)
+  const [revealed, setRevealed] = useState(
+    () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SESSION_REVEAL_KEY) === String(dayCount),
+  )
+  const [opening, setOpening] = useState(false)
+  const [tapCount, setTapCount] = useState(0)
+  const [pulse, setPulse] = useState(false)
   const [replyDraft, setReplyDraft] = useState(() => readerComment ?? '')
 
   useEffect(() => {
     setReplyDraft(readerComment ?? '')
   }, [readerComment])
 
+  useEffect(() => {
+    setRevealed(sessionStorage.getItem(SESSION_REVEAL_KEY) === String(dayCount))
+  }, [dayCount])
+
   const isFuture = dayCount < 1
 
-  function handleTap(e) {
-    triggerRipple(e.currentTarget, e.clientX, e.clientY)
+  function finishReveal() {
+    setRevealed(true)
+    setOpening(false)
+    try {
+      sessionStorage.setItem(SESSION_REVEAL_KEY, String(dayCount))
+    } catch {}
+    onReveal?.()
+  }
 
+  function resetEnvelope() {
+    try { sessionStorage.removeItem(SESSION_REVEAL_KEY) } catch {}
+    setRevealed(false)
+    setOpening(false)
+    setTapCount(0)
+  }
+
+  function handleTap(e) {
     if (isFuture) return
 
     if (!revealed) {
-      setHiding(true)
-      setTimeout(() => {
-        setRevealed(true)
-        localStorage.setItem('revealedDay', String(dayCount))
-        onReveal?.()
-      }, 450)
+      if (opening) return
+      triggerRipple(e.currentTarget, e.clientX, e.clientY)
+      setOpening(true)
+      window.setTimeout(finishReveal, OPEN_MS)
       return
     }
 
-    // Visual pulse feedback
+    triggerRipple(e.currentTarget, e.clientX, e.clientY)
+
     setPulse(true)
-    setTimeout(() => setPulse(false), 160)
+    window.setTimeout(() => setPulse(false), 160)
 
     const next = tapCount + 1
     setTapCount(next)
@@ -60,9 +84,9 @@ export default function DailyMessage({
     replyDraft.trim() !== (readerComment ?? '').trim()
   const canSaveReply = replyDirty && (replyDraft.trim().length > 0 || (readerComment ?? '').trim().length > 0)
 
-  function handleSaveReply(e) {
-    e.preventDefault()
-    e.stopPropagation()
+  function handleSaveReply(ev) {
+    ev.preventDefault()
+    ev.stopPropagation()
     if (!canSaveReply) return
     onSaveReaderComment?.(replyDraft)
   }
@@ -72,15 +96,15 @@ export default function DailyMessage({
       <div className="section-eyebrow">Today's Message</div>
 
       <div
-        className={`message-card glass-card ${revealed && !isFuture ? 'message-card--revealed' : ''}`}
+        id="todays-quote"
+        className={`message-card glass-card ${revealed && !isFuture ? 'message-card--revealed' : ''} ${opening ? 'message-card--opening' : ''}`}
         role="button"
         tabIndex={0}
-        aria-label="Tap to reveal today's message"
+        aria-label={revealed ? "Today's message" : "Open today's letter"}
         onClick={handleTap}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleTap(e) } }}
         style={pulse ? { transform: 'scale(0.98)' } : undefined}
       >
-        {/* Corner accent — bottom left (reader only) */}
         <img
           className="hk-card-corner"
           src="/stickers/hk-heart.svg"
@@ -89,17 +113,35 @@ export default function DailyMessage({
           draggable="false"
         />
 
-        {/* Reveal overlay */}
+        {/* Floating closed letter */}
         {!revealed && !isFuture && (
-          <div className={`reveal-overlay ${hiding ? 'hiding' : ''}`}>
-            <div className="reveal-heart">♥</div>
-            <p className="reveal-hint">Tap to reveal<br />today's message</p>
+          <div className={`letter-scene ${opening ? 'letter-scene--opening' : ''}`}>
+            <div className="letter-float" aria-hidden="true">
+              <div className="envelope">
+                <div className="envelope-glow" />
+                <div className="paper-peek">
+                  <span className="paper-peek-line" />
+                  <span className="paper-peek-line" />
+                  <span className="paper-peek-line short" />
+                </div>
+                <div className="envelope-back" />
+                <div className="envelope-pocket" />
+                <div className="envelope-flap" />
+                <div className="envelope-stamp" aria-hidden="true">♡</div>
+                <div className="envelope-seal">
+                  <span>♥</span>
+                </div>
+              </div>
+            </div>
+            <p className="letter-hint">Tap to open your letter</p>
           </div>
         )}
 
-        {/* Message — same structure + typography as timeline entry cards */}
         {revealed && message && (
-          <div className="message-content message-content--like-entry" dir={arabic ? 'rtl' : undefined}>
+          <div
+            className="message-content message-content--like-entry message-content--paper message-content--letter-out"
+            dir={arabic ? 'rtl' : undefined}
+          >
             <div className="entry-header daily-message-entry-header">
               <span className="entry-timestamp">
                 {timeLabel}
@@ -115,7 +157,7 @@ export default function DailyMessage({
         )}
 
         {revealed && !message && !isFuture && (
-          <div className="message-content message-content--like-entry message-content-empty">
+          <div className="message-content message-content--like-entry message-content-empty message-content--paper message-content--letter-out">
             <div className="entry-header daily-message-entry-header">
               <span className="entry-timestamp">
                 {timeLabel}
@@ -126,7 +168,6 @@ export default function DailyMessage({
           </div>
         )}
 
-        {/* Future */}
         {isFuture && (
           <div className="future-message">
             <div className="future-icon">⏳</div>
@@ -135,7 +176,17 @@ export default function DailyMessage({
         )}
       </div>
 
-      {/* Outside tappable card so typing / buttons don't trigger reveal or easter-egg taps */}
+      {revealed && !isFuture && (
+        <button
+          type="button"
+          className="btn-replay-envelope"
+          onClick={resetEnvelope}
+          aria-label="Replay envelope animation"
+        >
+          ↺ replay
+        </button>
+      )}
+
       {revealed && message && !isFuture && (
         <form
           className="reader-comment glass-card"
