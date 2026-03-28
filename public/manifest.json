@@ -1,0 +1,14 @@
+{
+  "name": "Our Little World",
+  "short_name": "Our Love",
+  "description": "Daily love messages and our shared journal",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d0020",
+  "theme_color": "#0d0020",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "64x64", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
