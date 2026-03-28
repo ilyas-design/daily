@@ -1,18 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export default function SallyIntro({ onDone }) {
   const [fading, setFading] = useState(false)
+  const onDoneRef = useRef(onDone)
 
   useEffect(() => {
     const t1 = setTimeout(() => setFading(true), 3400)
-    const t2 = setTimeout(() => onDone?.(), 4900)
+    const t2 = setTimeout(() => onDoneRef.current?.(), 4900)
     return () => { clearTimeout(t1); clearTimeout(t2) }
-  }, [onDone])
+  }, []) // runs once on mount, immune to re-renders
 
   function dismiss() {
     if (fading) return
     setFading(true)
-    setTimeout(() => onDone?.(), 1500)
+    setTimeout(() => onDoneRef.current?.(), 1500)
   }
 
   return (
